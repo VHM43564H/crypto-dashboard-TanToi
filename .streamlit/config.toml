@@ -1,0 +1,17 @@
+# Crypto Dashboard Pro - Streamlit Theme
+# Dark professional crypto style (neon green + dark background)
+
+[theme]
+primaryColor = "#00ff9f"           # Màu lãi / accent (xanh neon)
+backgroundColor = "#0e1117"        # Nền chính tối
+secondaryBackgroundColor = "#1a1d24"  # Nền secondary (card, sidebar)
+textColor = "#e0e0e0"              # Màu chữ chính
+font = "sans-serif"
+
+# Tùy chọn bổ sung (nếu Streamlit hỗ trợ)
+[server]
+headless = false
+port = 8501
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,14 @@
+# Crypto Dashboard Pro - Requirements
+# Cài đặt: pip install -r requirements.txt
+
+streamlit>=1.32.0
+pandas>=2.0.0
+numpy>=1.26.0
+plotly>=5.18.0
+requests>=2.31.0
+feedparser>=6.0.10
+
+# Ghi chú:
+# - Không dùng pandas-ta hoặc ta-lib để giữ code giáo dục (tính chỉ báo thủ công)
+# - Tất cả API calls đều dùng requests thuần (dễ hiểu, không wrapper)
+# - Chạy tốt trên Windows / macOS / Linux với Python 3.10+
