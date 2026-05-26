@@ -20,14 +20,6 @@ Chạy: streamlit run app.py
 # 1. IMPORTS + CẤU HÌNH TRANG (QUAN TRỌNG: set_page_config PHẢI LÀ LỆNH STREAMLIT ĐẦU TIÊN)
 # =============================================================================
 import streamlit as st
-
-# st.set_page_config PHẢI ở VERY TOP ngay sau import streamlit (trước mọi st.* khác và trước heavy imports nếu có)
-st.set_page_config(
-    page_title="Crypto Dashboard Pro | Phân tích Crypto",
-    page_icon="📊",
-    layout="wide"
-)
-
 import pandas as pd
 import numpy as np
 import requests
@@ -36,6 +28,9 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
 import feedparser
+
+# st.set_page_config MUST be the VERY FIRST Streamlit command (right after ALL imports, before any other st.*)
+st.set_page_config(title="Crypto Dashboard Pro", layout="wide", page_icon="")
 
 # CSS tùy chỉnh cho theme crypto hiện đại + đẹp hơn
 st.markdown("""
@@ -112,6 +107,20 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# =============================================================================
+# FALLBACK COINS (for Tab 2 dropdown to keep UI 100% identical before lazy Top20 load)
+# =============================================================================
+
+DEFAULT_COIN_OPTIONS = [
+    "Bitcoin (BTC)", "Ethereum (ETH)", "BNB (BNB)", "Solana (SOL)", "XRP (XRP)",
+    "Dogecoin (DOGE)", "Cardano (ADA)", "Avalanche (AVAX)", "Shiba Inu (SHIB)",
+    "Polkadot (DOT)", "Chainlink (LINK)", "Litecoin (LTC)", "Bitcoin Cash (BCH)",
+    "Uniswap (UNI)", "Stellar (XLM)", "Monero (XMR)", "Ethereum Classic (ETC)",
+    "Filecoin (FIL)", "Cosmos (ATOM)", "VeChain (VET)"
+]
+DEFAULT_SYMBOL_MAP = {opt: opt.split("(")[1].replace(")", "") for opt in DEFAULT_COIN_OPTIONS}
+
 
 # =============================================================================
 # 3. HÀM HELPER (FORMAT + TIME AGO + TÍNH CHỈ BÁO)
@@ -252,7 +261,7 @@ def fetch_top_coins() -> pd.DataFrame:
     """
     Lấy Top 20 coin theo market cap từ CoinGecko public API (không cần key).
     Trả về DataFrame với các cột cần thiết + 24h% và 7d%.
-    Cache 5 phút.
+    Cache 5 phút. KHÔNG gọi st.* bên trong (tránh side-effect khi cache).
     """
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
@@ -279,12 +288,12 @@ def fetch_top_coins() -> pd.DataFrame:
         df = df.dropna(subset=["market_cap_rank"])
         df["market_cap_rank"] = df["market_cap_rank"].astype(int)
         return df
-    except Exception as e:
-        st.error(f"Lỗi tải Top 20 từ CoinGecko: {str(e)[:120]}")
+    except Exception:
+        # Trả rỗng; caller sẽ hiển thị lỗi nếu cần. Không gọi st.* ở đây.
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_daily_klines(coin_symbol: str, days: int = 90) -> pd.DataFrame:
     """
     Lấy dữ liệu nến DAILY từ Binance public API (không key).
@@ -292,6 +301,7 @@ def fetch_daily_klines(coin_symbol: str, days: int = 90) -> pd.DataFrame:
     Nếu thất bại (coin hiếm), fallback sang CoinGecko /ohlc (granularity thô hơn).
 
     Trả về DataFrame: index datetime, cột ['open','high','low','close']
+    Cache 5 phút. KHÔNG gọi st.* bên trong.
     """
     symbol = coin_symbol.upper()
     binance_symbol = f"{symbol}USDT"
@@ -342,8 +352,8 @@ def fetch_daily_klines(coin_symbol: str, days: int = 90) -> pd.DataFrame:
                 df = df.set_index("date")[["open", "high", "low", "close"]]
                 df = df.dropna()
                 return df
-    except Exception as e:
-        st.warning(f"Không lấy được dữ liệu nến cho {symbol}. Lỗi: {str(e)[:80]}")
+    except Exception:
+        pass  # nuốt lỗi, trả rỗng ở cuối
 
     # Trả về rỗng nếu cả hai đều fail
     return pd.DataFrame()
@@ -547,34 +557,22 @@ def show_strong_disclaimer():
 # =============================================================================
 
 def main():
-    # Header
+    # Header (luôn nhanh, không network)
     st.title("📊 Crypto Dashboard Pro")
     st.markdown(
         "Dữ liệu thời gian thực từ **CoinGecko** • **Binance** • **CryptoCompare** &nbsp;|&nbsp; "
         "Cập nhật với cache thông minh &nbsp;|&nbsp; <span style='color:#00ff9f'>Phiên bản 1.0</span>"
     )
 
-    # Lấy dữ liệu Top 20 (dùng chung cho Tab 1 + Tab 2)
-    with st.spinner("Đang tải dữ liệu Top 20 coin..."):
-        top_coins_df = fetch_top_coins()
-
-    if top_coins_df.empty:
-        st.error("Không thể tải dữ liệu coin. Vui lòng kiểm tra kết nối mạng và thử lại.")
-        show_strong_disclaimer()
-        return
-
-    # Tạo mapping tiện lợi cho Tab 2
-    coin_options = [
-        f"{row['name']} ({row['symbol'].upper()})"
-        for _, row in top_coins_df.iterrows()
-    ]
-    coin_id_map = {f"{row['name']} ({row['symbol'].upper()})": row['id']
-                   for _, row in top_coins_df.iterrows()}
-    coin_symbol_map = {f"{row['name']} ({row['symbol'].upper()})": row['symbol']
-                       for _, row in top_coins_df.iterrows()}
+    # Khởi tạo session state cho lazy loading — KHÔNG fetch gì ở đây (quan trọng cho healthz)
+    if "top_coins_df" not in st.session_state:
+        st.session_state["top_coins_df"] = pd.DataFrame()
+    if "chart_loaded" not in st.session_state:
+        st.session_state["chart_loaded"] = False
+    # tab3_news_loaded và tab3_news_articles được xử lý bên trong tab3
 
     # =============================================================================
-    # TẠO 3 TABS (YÊU CẦU CHÍNH XÁC: st.tabs)
+    # TẠO 3 TABS (YÊU CẦU CHÍNH XÁC: st.tabs) — skeleton ngay, data chỉ khi user click refresh
     # =============================================================================
     tab1, tab2, tab3 = st.tabs([
         "📊 Giá biến động Top 20 Coin",
@@ -589,77 +587,84 @@ def main():
         st.header("📊 Giá biến động Top 20 Coin theo Market Cap")
         st.caption("Nguồn: CoinGecko Public API • Cập nhật mỗi ~5 phút (cache)")
 
-        # Nút cập nhật dữ liệu
+        # Nút cập nhật dữ liệu — CHỈ KHI CLICK NÚT NÀY MỚI GỌI FETCH (lazy hoàn toàn)
         col_btn, col_info = st.columns([1, 3])
         with col_btn:
             if st.button("🔄 Cập nhật dữ liệu", type="primary", key="refresh_tab1"):
                 st.cache_data.clear()
-                st.rerun()
+                with st.spinner("Đang tải dữ liệu..."):
+                    st.session_state["top_coins_df"] = fetch_top_coins()
 
         with col_info:
             st.caption(f"Top 20 coin • Hiển thị thay đổi giá 24h & 7d • Dữ liệu gần nhất: {datetime.now().strftime('%H:%M:%S')}")
 
-        # --- TOP 5 METRIC CARDS ---
-        st.subheader("🔥 Top 5 Coin nổi bật")
-        top5 = top_coins_df.head(5).reset_index(drop=True)
+        # === LAZY: chỉ render dữ liệu sau khi user click nút (top_coins_df được nạp vào session) ===
+        top_coins_df = st.session_state.get("top_coins_df", pd.DataFrame())
+        if top_coins_df.empty:
+            st.info("📌 Nhấn nút **Cập nhật dữ liệu** bên trên để tải Top 20 coin từ CoinGecko. Dữ liệu chỉ fetch khi bạn yêu cầu — giúp app chạy ổn định trên Streamlit Cloud.")
+            show_strong_disclaimer()
+        else:
+            # --- TOP 5 METRIC CARDS ---
+            st.subheader("🔥 Top 5 Coin nổi bật")
+            top5 = top_coins_df.head(5).reset_index(drop=True)
 
-        cols = st.columns(5)
-        for idx, row in top5.iterrows():
-            with cols[idx]:
-                chg = row.get("price_change_percentage_24h", 0) or 0
-                delta_color = "normal" if chg >= 0 else "inverse"
-                st.metric(
-                    label=f"#{row['market_cap_rank']} {row['name']}",
-                    value=f"${row['current_price']:,.2f}",
-                    delta=f"{chg:.2f}%",
-                    delta_color=delta_color
+            cols = st.columns(5)
+            for idx, row in top5.iterrows():
+                with cols[idx]:
+                    chg = row.get("price_change_percentage_24h", 0) or 0
+                    delta_color = "normal" if chg >= 0 else "inverse"
+                    st.metric(
+                        label=f"#{row['market_cap_rank']} {row['name']}",
+                        value=f"${row['current_price']:,.2f}",
+                        delta=f"{chg:.2f}%",
+                        delta_color=delta_color
+                    )
+
+            st.divider()
+
+            # --- FULL SORTABLE DATAFRAME ---
+            st.subheader("📋 Bảng dữ liệu đầy đủ (Sortable)")
+
+            # Chuẩn bị dataframe hiển thị tiếng Việt + emoji
+            display_df = pd.DataFrame({
+                "Hạng": top_coins_df["market_cap_rank"],
+                "Coin": top_coins_df["name"] + " (" + top_coins_df["symbol"].str.upper() + ")",
+                "Giá (USD)": top_coins_df["current_price"],
+                "24h %": top_coins_df["price_change_percentage_24h"].round(2),
+                "7d %": top_coins_df.get("price_change_percentage_7d", pd.Series([0]*len(top_coins_df))).round(2),
+                "Volume 24h": top_coins_df["total_volume"].apply(format_large_number),
+                "Market Cap": top_coins_df["market_cap"].apply(format_large_number),
+                "Xu hướng": np.where(
+                    top_coins_df["price_change_percentage_24h"].fillna(0) >= 0, "🟢", "🔴"
                 )
+            })
 
-        st.divider()
-
-        # --- FULL SORTABLE DATAFRAME ---
-        st.subheader("📋 Bảng dữ liệu đầy đủ (Sortable)")
-
-        # Chuẩn bị dataframe hiển thị tiếng Việt + emoji
-        display_df = pd.DataFrame({
-            "Hạng": top_coins_df["market_cap_rank"],
-            "Coin": top_coins_df["name"] + " (" + top_coins_df["symbol"].str.upper() + ")",
-            "Giá (USD)": top_coins_df["current_price"],
-            "24h %": top_coins_df["price_change_percentage_24h"].round(2),
-            "7d %": top_coins_df.get("price_change_percentage_7d", pd.Series([0]*len(top_coins_df))).round(2),
-            "Volume 24h": top_coins_df["total_volume"].apply(format_large_number),
-            "Market Cap": top_coins_df["market_cap"].apply(format_large_number),
-            "Xu hướng": np.where(
-                top_coins_df["price_change_percentage_24h"].fillna(0) >= 0, "🟢", "🔴"
+            # Hiển thị với column_config đẹp
+            st.dataframe(
+                display_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Giá (USD)": st.column_config.NumberColumn(
+                        format="$%.2f",
+                        help="Giá hiện tại theo USD"
+                    ),
+                    "24h %": st.column_config.NumberColumn(
+                        format="%.2f%%",
+                        help="Thay đổi giá trong 24 giờ qua"
+                    ),
+                    "7d %": st.column_config.NumberColumn(
+                        format="%.2f%%",
+                        help="Thay đổi giá trong 7 ngày qua"
+                    ),
+                    "Volume 24h": st.column_config.TextColumn(help="Khối lượng giao dịch 24h"),
+                    "Market Cap": st.column_config.TextColumn(help="Vốn hóa thị trường"),
+                }
             )
-        })
 
-        # Hiển thị với column_config đẹp
-        st.dataframe(
-            display_df,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Giá (USD)": st.column_config.NumberColumn(
-                    format="$%.2f",
-                    help="Giá hiện tại theo USD"
-                ),
-                "24h %": st.column_config.NumberColumn(
-                    format="%.2f%%",
-                    help="Thay đổi giá trong 24 giờ qua"
-                ),
-                "7d %": st.column_config.NumberColumn(
-                    format="%.2f%%",
-                    help="Thay đổi giá trong 7 ngày qua"
-                ),
-                "Volume 24h": st.column_config.TextColumn(help="Khối lượng giao dịch 24h"),
-                "Market Cap": st.column_config.TextColumn(help="Vốn hóa thị trường"),
-            }
-        )
+            st.caption("💡 Mẹo: Click tiêu đề cột để sắp xếp tăng/giảm. Emoji 🟢 = tăng, 🔴 = giảm (24h).")
 
-        st.caption("💡 Mẹo: Click tiêu đề cột để sắp xếp tăng/giảm. Emoji 🟢 = tăng, 🔴 = giảm (24h).")
-
-        show_strong_disclaimer()
+            show_strong_disclaimer()
 
     # ==========================================================================
     # TAB 2: PHÂN TÍCH KỸ THUẬT (CANDLES + TOÀN BỘ CHỈ BÁO + TOGGLE)
@@ -668,7 +673,20 @@ def main():
         st.header("📉 Phân tích Kỹ thuật Tương tác")
         st.caption("Nến Daily từ Binance Public API (chất lượng cao) • Tính chỉ báo thủ công bằng pandas")
 
-        # --- CONTROLS ---
+        # --- XÂY DỰNG OPTIONS/MAP CHO DROPDOWN (ưu tiên live Top20 nếu đã load ở Tab1, fallback để UI y nguyên) ---
+        live_df = st.session_state.get("top_coins_df", pd.DataFrame())
+        if isinstance(live_df, pd.DataFrame) and not live_df.empty:
+            coin_options = [
+                f"{row['name']} ({row['symbol'].upper()})"
+                for _, row in live_df.iterrows()
+            ]
+            coin_symbol_map = {f"{row['name']} ({row['symbol'].upper()})": row['symbol']
+                               for _, row in live_df.iterrows()}
+        else:
+            coin_options = DEFAULT_COIN_OPTIONS
+            coin_symbol_map = DEFAULT_SYMBOL_MAP
+
+        # --- CONTROLS (giữ nguyên thứ tự widget để UI 100% giống) ---
         ctrl_col1, ctrl_col2 = st.columns([2.2, 1.3])
 
         with ctrl_col1:
@@ -703,201 +721,204 @@ def main():
             show_macd = st.checkbox("MACD (12,26,9)", value=True)
             show_ichimoku = st.checkbox("Ichimoku Cloud (9-26-52)", value=True)
 
-        # Nút tải / refresh
+        # Nút tải / refresh — CHỈ KHI CLICK NÚT NÀY MỚI GỌI FETCH (lazy hoàn toàn)
         if st.button("📈 Tải / Cập nhật biểu đồ", type="primary", key="load_chart"):
             st.cache_data.clear()  # cho phép refresh thủ công
+            st.session_state["chart_loaded"] = True
 
-        # --- LẤY DỮ LIỆU NẾN + TÍNH CHỈ BÁO ---
-        selected_symbol = coin_symbol_map[selected_label]
-        selected_id = coin_id_map[selected_label]
+        # --- LAZY CHART DATA: chỉ fetch + vẽ sau khi user click nút ---
+        selected_symbol = coin_symbol_map.get(selected_label, "BTC")
 
-        with st.spinner(f"Đang tải {timeframe_days} ngày dữ liệu nến cho {selected_symbol.upper()}..."):
-            ohlc_df = fetch_daily_klines(selected_symbol, days=timeframe_days)
+        if st.session_state.get("chart_loaded", False):
+            with st.spinner("Đang tải dữ liệu..."):
+                ohlc_df = fetch_daily_klines(selected_symbol, days=timeframe_days)
 
-        if ohlc_df.empty or len(ohlc_df) < 10:
-            st.error("Không đủ dữ liệu nến để vẽ biểu đồ. Vui lòng thử coin khác hoặc timeframe ngắn hơn.")
+            if ohlc_df.empty or len(ohlc_df) < 10:
+                st.error("Không đủ dữ liệu nến để vẽ biểu đồ. Vui lòng thử coin khác hoặc timeframe ngắn hơn.")
+                show_strong_disclaimer()
+            else:
+                # Tính tất cả chỉ báo một lần (rẻ)
+                close = ohlc_df["close"]
+                ohlc_df = ohlc_df.copy()
+                ohlc_df["EMA9"] = calculate_ema(close, 9)
+                ohlc_df["EMA21"] = calculate_ema(close, 21)
+                ohlc_df["EMA50"] = calculate_ema(close, 50)
+                ohlc_df["SMA50"] = calculate_sma(close, 50)
+                ohlc_df["SMA200"] = calculate_sma(close, 200)
+                ohlc_df["RSI"] = calculate_rsi(ohlc_df, 14)
+                ohlc_df["MACD"], ohlc_df["MACD_Signal"], ohlc_df["MACD_Hist"] = calculate_macd(ohlc_df)
+                ohlc_df["Tenkan"], ohlc_df["Kijun"], ohlc_df["SenkouA"], ohlc_df["SenkouB"], ohlc_df["Chikou"] = \
+                    calculate_ichimoku(ohlc_df)
+
+                # --- XÂY DỰNG BIỂU ĐỒ PLOTLY (3 SUBPLOTS) ---
+                fig = make_subplots(
+                    rows=3, cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.035,
+                    row_heights=[0.58, 0.21, 0.21],
+                    subplot_titles=(
+                        f"{selected_label} — {timeframe_days} ngày (Daily OHLC + Chỉ báo)",
+                        "RSI (14) — Quá mua >70 / Quá bán <30",
+                        "MACD (12, 26, 9) + Histogram"
+                    )
+                )
+
+                # Row 1: Candlestick
+                fig.add_trace(
+                    go.Candlestick(
+                        x=ohlc_df.index,
+                        open=ohlc_df["open"],
+                        high=ohlc_df["high"],
+                        low=ohlc_df["low"],
+                        close=ohlc_df["close"],
+                        name="OHLC",
+                        increasing_line_color="#00ff9f",
+                        decreasing_line_color="#ff5252"
+                    ),
+                    row=1, col=1
+                )
+
+                # EMA lines (nếu bật)
+                if show_ema9:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["EMA9"], name="EMA 9",
+                                             line=dict(color="#00b0ff", width=1.5)), row=1, col=1)
+                if show_ema21:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["EMA21"], name="EMA 21",
+                                             line=dict(color="#ff9800", width=1.5)), row=1, col=1)
+                if show_ema50:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["EMA50"], name="EMA 50",
+                                             line=dict(color="#e040fb", width=1.5)), row=1, col=1)
+
+                # SMA
+                if show_sma50:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["SMA50"], name="SMA 50",
+                                             line=dict(color="#ffeb3b", width=1.2, dash="dash")), row=1, col=1)
+                if show_sma200:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["SMA200"], name="SMA 200",
+                                             line=dict(color="#ff4081", width=2)), row=1, col=1)
+
+                # Ichimoku Cloud + 5 đường (nếu bật)
+                if show_ichimoku:
+                    # Cloud fill (đơn giản, màu trong suốt đẹp)
+                    fig.add_trace(go.Scatter(
+                        x=ohlc_df.index, y=ohlc_df["SenkouA"],
+                        line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip"
+                    ), row=1, col=1)
+                    fig.add_trace(go.Scatter(
+                        x=ohlc_df.index, y=ohlc_df["SenkouB"],
+                        fill="tonexty",
+                        fillcolor="rgba(0, 200, 150, 0.18)",
+                        line=dict(color="rgba(0,0,0,0)"),
+                        name="Ichimoku Cloud",
+                        showlegend=True
+                    ), row=1, col=1)
+
+                    # 5 đường Ichimoku
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["Tenkan"], name="Tenkan-sen (9)",
+                                             line=dict(color="#ff5252", width=1.2)), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["Kijun"], name="Kijun-sen (26)",
+                                             line=dict(color="#2196f3", width=1.2)), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["Chikou"], name="Chikou Span",
+                                             line=dict(color="#9c27b0", width=1, dash="dot")), row=1, col=1)
+
+                # Row 2: RSI
+                if show_rsi and "RSI" in ohlc_df.columns:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["RSI"], name="RSI 14",
+                                             line=dict(color="#9c27b0", width=1.8)), row=2, col=1)
+                    # Overbought / Oversold lines
+                    fig.add_hline(y=70, line=dict(color="#ff5252", dash="dash", width=1), row=2, col=1)
+                    fig.add_hline(y=30, line=dict(color="#00ff9f", dash="dash", width=1), row=2, col=1)
+                    fig.add_hline(y=50, line=dict(color="#555", width=0.5), row=2, col=1)
+
+                # Row 3: MACD
+                if show_macd and "MACD" in ohlc_df.columns:
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["MACD"], name="MACD Line",
+                                             line=dict(color="#00bcd4", width=1.6)), row=3, col=1)
+                    fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["MACD_Signal"], name="Signal Line",
+                                             line=dict(color="#ff9800", width=1.4)), row=3, col=1)
+
+                    # Histogram màu xanh/đỏ
+                    colors = np.where(ohlc_df["MACD_Hist"] >= 0, "#00ff9f", "#ff5252")
+                    fig.add_trace(go.Bar(
+                        x=ohlc_df.index, y=ohlc_df["MACD_Hist"], name="Histogram",
+                        marker_color=colors, opacity=0.75
+                    ), row=3, col=1)
+
+                # Layout chung
+                fig.update_layout(
+                    height=820,
+                    margin=dict(l=40, r=20, t=50, b=30),
+                    legend=dict(orientation="h", y=1.02, x=0, font=dict(size=10)),
+                    hovermode="x unified",
+                    plot_bgcolor="#0e1117",
+                    paper_bgcolor="#0e1117",
+                    font=dict(color="#e0e0e0"),
+                    xaxis_rangeslider_visible=False,
+                    showlegend=True
+                )
+                fig.update_xaxes(gridcolor="#2a2d35", showspikes=True)
+                fig.update_yaxes(gridcolor="#2a2d35")
+
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True})
+
+                # --- BẢNG GIẢI THÍCH CHỈ BÁO (HỌC TẬP) ---
+                st.subheader("📖 Giải thích các chỉ báo (dùng để học)")
+                explanation_data = {
+                    "Chỉ báo": [
+                        "EMA 9 / 21 / 50",
+                        "SMA 50 / 200",
+                        "RSI (14)",
+                        "MACD (12,26,9)",
+                        "Ichimoku Cloud (9-26-52)"
+                    ],
+                    "Công thức / Ý nghĩa ngắn gọn": [
+                        "Trung bình trượt hàm mũ — phản ứng nhanh với giá gần đây. EMA9 rất nhạy, dùng cho tín hiệu ngắn hạn.",
+                        "Trung bình trượt đơn giản. SMA200 là đường xu hướng dài hạn quan trọng (Golden/Death cross với SMA50).",
+                        "Chỉ báo động lượng. >70 = quá mua (cân nhắc chốt), <30 = quá bán. 50 = trung lập.",
+                        "MACD Line = EMA12 - EMA26. Signal = EMA9(MACD). Histogram thể hiện sức mạnh. Cắt nhau = tín hiệu.",
+                        "Hệ thống 5 đường + mây. Mây = hỗ trợ/kháng cự tương lai. Giá trên mây = xu hướng tăng mạnh."
+                    ],
+                    "Cách sử dụng phổ biến": [
+                        "Giá > EMA9 + EMA9 > EMA21 → ngắn hạn bullish",
+                        "SMA50 cắt lên SMA200 (Golden Cross) → xu hướng tăng dài hạn",
+                        "RSI giảm từ trên 70 + phân kỳ → tín hiệu đảo chiều giảm",
+                        "MACD cắt lên Signal + Histogram tăng → mua mạnh",
+                        "Giá trên mây + Tenkan > Kijun + mây xanh → xu hướng tăng rất mạnh"
+                    ]
+                }
+                st.dataframe(
+                    pd.DataFrame(explanation_data),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                st.caption("⚠️ Lưu ý: Dữ liệu nến 365 ngày từ Binance là daily → rất phù hợp tính SMA200 & Ichimoku. Timeframe ngắn hơn sẽ có ít nến hơn.")
+                show_strong_disclaimer()
+        else:
+            st.info("📌 Nhấn nút **Tải / Cập nhật biểu đồ** bên trên để tải dữ liệu nến từ Binance và hiển thị biểu đồ kỹ thuật với đầy đủ chỉ báo (EMA, SMA, RSI, MACD, Ichimoku). Dữ liệu chỉ fetch khi bạn yêu cầu.")
             show_strong_disclaimer()
-            st.stop()
-
-        # Tính tất cả chỉ báo một lần (rẻ)
-        close = ohlc_df["close"]
-        ohlc_df = ohlc_df.copy()
-        ohlc_df["EMA9"] = calculate_ema(close, 9)
-        ohlc_df["EMA21"] = calculate_ema(close, 21)
-        ohlc_df["EMA50"] = calculate_ema(close, 50)
-        ohlc_df["SMA50"] = calculate_sma(close, 50)
-        ohlc_df["SMA200"] = calculate_sma(close, 200)
-        ohlc_df["RSI"] = calculate_rsi(ohlc_df, 14)
-        ohlc_df["MACD"], ohlc_df["MACD_Signal"], ohlc_df["MACD_Hist"] = calculate_macd(ohlc_df)
-        ohlc_df["Tenkan"], ohlc_df["Kijun"], ohlc_df["SenkouA"], ohlc_df["SenkouB"], ohlc_df["Chikou"] = \
-            calculate_ichimoku(ohlc_df)
-
-        # --- XÂY DỰNG BIỂU ĐỒ PLOTLY (3 SUBPLOTS) ---
-        fig = make_subplots(
-            rows=3, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.035,
-            row_heights=[0.58, 0.21, 0.21],
-            subplot_titles=(
-                f"{selected_label} — {timeframe_days} ngày (Daily OHLC + Chỉ báo)",
-                "RSI (14) — Quá mua >70 / Quá bán <30",
-                "MACD (12, 26, 9) + Histogram"
-            )
-        )
-
-        # Row 1: Candlestick
-        fig.add_trace(
-            go.Candlestick(
-                x=ohlc_df.index,
-                open=ohlc_df["open"],
-                high=ohlc_df["high"],
-                low=ohlc_df["low"],
-                close=ohlc_df["close"],
-                name="OHLC",
-                increasing_line_color="#00ff9f",
-                decreasing_line_color="#ff5252"
-            ),
-            row=1, col=1
-        )
-
-        # EMA lines (nếu bật)
-        if show_ema9:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["EMA9"], name="EMA 9",
-                                     line=dict(color="#00b0ff", width=1.5)), row=1, col=1)
-        if show_ema21:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["EMA21"], name="EMA 21",
-                                     line=dict(color="#ff9800", width=1.5)), row=1, col=1)
-        if show_ema50:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["EMA50"], name="EMA 50",
-                                     line=dict(color="#e040fb", width=1.5)), row=1, col=1)
-
-        # SMA
-        if show_sma50:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["SMA50"], name="SMA 50",
-                                     line=dict(color="#ffeb3b", width=1.2, dash="dash")), row=1, col=1)
-        if show_sma200:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["SMA200"], name="SMA 200",
-                                     line=dict(color="#ff4081", width=2)), row=1, col=1)
-
-        # Ichimoku Cloud + 5 đường (nếu bật)
-        if show_ichimoku:
-            # Cloud fill (đơn giản, màu trong suốt đẹp)
-            fig.add_trace(go.Scatter(
-                x=ohlc_df.index, y=ohlc_df["SenkouA"],
-                line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip"
-            ), row=1, col=1)
-            fig.add_trace(go.Scatter(
-                x=ohlc_df.index, y=ohlc_df["SenkouB"],
-                fill="tonexty",
-                fillcolor="rgba(0, 200, 150, 0.18)",
-                line=dict(color="rgba(0,0,0,0)"),
-                name="Ichimoku Cloud",
-                showlegend=True
-            ), row=1, col=1)
-
-            # 5 đường Ichimoku
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["Tenkan"], name="Tenkan-sen (9)",
-                                     line=dict(color="#ff5252", width=1.2)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["Kijun"], name="Kijun-sen (26)",
-                                     line=dict(color="#2196f3", width=1.2)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["Chikou"], name="Chikou Span",
-                                     line=dict(color="#9c27b0", width=1, dash="dot")), row=1, col=1)
-
-        # Row 2: RSI
-        if show_rsi and "RSI" in ohlc_df.columns:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["RSI"], name="RSI 14",
-                                     line=dict(color="#9c27b0", width=1.8)), row=2, col=1)
-            # Overbought / Oversold lines
-            fig.add_hline(y=70, line=dict(color="#ff5252", dash="dash", width=1), row=2, col=1)
-            fig.add_hline(y=30, line=dict(color="#00ff9f", dash="dash", width=1), row=2, col=1)
-            fig.add_hline(y=50, line=dict(color="#555", width=0.5), row=2, col=1)
-
-        # Row 3: MACD
-        if show_macd and "MACD" in ohlc_df.columns:
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["MACD"], name="MACD Line",
-                                     line=dict(color="#00bcd4", width=1.6)), row=3, col=1)
-            fig.add_trace(go.Scatter(x=ohlc_df.index, y=ohlc_df["MACD_Signal"], name="Signal Line",
-                                     line=dict(color="#ff9800", width=1.4)), row=3, col=1)
-
-            # Histogram màu xanh/đỏ
-            colors = np.where(ohlc_df["MACD_Hist"] >= 0, "#00ff9f", "#ff5252")
-            fig.add_trace(go.Bar(
-                x=ohlc_df.index, y=ohlc_df["MACD_Hist"], name="Histogram",
-                marker_color=colors, opacity=0.75
-            ), row=3, col=1)
-
-        # Layout chung
-        fig.update_layout(
-            height=820,
-            margin=dict(l=40, r=20, t=50, b=30),
-            legend=dict(orientation="h", y=1.02, x=0, font=dict(size=10)),
-            hovermode="x unified",
-            plot_bgcolor="#0e1117",
-            paper_bgcolor="#0e1117",
-            font=dict(color="#e0e0e0"),
-            xaxis_rangeslider_visible=False,
-            showlegend=True
-        )
-        fig.update_xaxes(gridcolor="#2a2d35", showspikes=True)
-        fig.update_yaxes(gridcolor="#2a2d35")
-
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True})
-
-        # --- BẢNG GIẢI THÍCH CHỈ BÁO (HỌC TẬP) ---
-        st.subheader("📖 Giải thích các chỉ báo (dùng để học)")
-        explanation_data = {
-            "Chỉ báo": [
-                "EMA 9 / 21 / 50",
-                "SMA 50 / 200",
-                "RSI (14)",
-                "MACD (12,26,9)",
-                "Ichimoku Cloud (9-26-52)"
-            ],
-            "Công thức / Ý nghĩa ngắn gọn": [
-                "Trung bình trượt hàm mũ — phản ứng nhanh với giá gần đây. EMA9 rất nhạy, dùng cho tín hiệu ngắn hạn.",
-                "Trung bình trượt đơn giản. SMA200 là đường xu hướng dài hạn quan trọng (Golden/Death cross với SMA50).",
-                "Chỉ báo động lượng. >70 = quá mua (cân nhắc chốt), <30 = quá bán. 50 = trung lập.",
-                "MACD Line = EMA12 - EMA26. Signal = EMA9(MACD). Histogram thể hiện sức mạnh. Cắt nhau = tín hiệu.",
-                "Hệ thống 5 đường + mây. Mây = hỗ trợ/kháng cự tương lai. Giá trên mây = xu hướng tăng mạnh."
-            ],
-            "Cách sử dụng phổ biến": [
-                "Giá > EMA9 + EMA9 > EMA21 → ngắn hạn bullish",
-                "SMA50 cắt lên SMA200 (Golden Cross) → xu hướng tăng dài hạn",
-                "RSI giảm từ trên 70 + phân kỳ → tín hiệu đảo chiều giảm",
-                "MACD cắt lên Signal + Histogram tăng → mua mạnh",
-                "Giá trên mây + Tenkan > Kijun + mây xanh → xu hướng tăng rất mạnh"
-            ]
-        }
-        st.dataframe(
-            pd.DataFrame(explanation_data),
-            hide_index=True,
-            use_container_width=True
-        )
-
-        st.caption("⚠️ Lưu ý: Dữ liệu nến 365 ngày từ Binance là daily → rất phù hợp tính SMA200 & Ichimoku. Timeframe ngắn hơn sẽ có ít nến hơn.")
-        show_strong_disclaimer()
 
     # ==========================================================================
-    # TAB 3: TIN TỨC CRYPTO 24H  (CHỈ PHẦN NÀY ĐƯỢC SỬA - GIỮ NGUYÊN TAB 1 & 2)
+    # TAB 3: TIN TỨC KINH TẾ - TÀI CHÍNH VIỆT NAM (RSS) — HOÀN TOÀN LAZY
     # ==========================================================================
     with tab3:
         st.header("📰 Tin tức Kinh tế - Tài chính Việt Nam")
         st.caption("Nguồn: VNExpress • Tuổi Trẻ • CafeF • VnEconomy (RSS) • Cache 5 phút (ttl=300)")
 
-        # Nút Làm mới tin tức — CHỈ KHI CLICK NÚT NÀY (sau khi user switch sang Tab 3) MỚI GỌI FETCH RSS
-        # Thiết kế này đảm bảo: lần load đầu app (healthz) KHÔNG BAO GIỜ chạm RSS → không crash, không delay
+        # Nút Làm mới — CHỈ KHI CLICK NÚT NÀY MỚI GỌI FETCH RSS (lazy, không chạm network ở startup)
         if st.button("🔄 Làm mới tin tức", type="primary", key="refresh_vn_news"):
             st.cache_data.clear()
-            st.session_state["tab3_news_loaded"] = True
-            st.rerun()
-
-        # HOÀN TOÀN LAZY: fetch_vietnam_econ_news() chỉ được gọi sau khi user nhấn nút ở Tab 3
-        if st.session_state.get("tab3_news_loaded", False):
-            with st.spinner("Đang lấy tin mới nhất từ báo Việt Nam..."):
+            with st.spinner("Đang tải dữ liệu..."):
                 news_articles = fetch_vietnam_econ_news(limit=12)
+            st.session_state["tab3_news_loaded"] = True
+            st.session_state["tab3_news_articles"] = news_articles
+
+        # === RENDER: chỉ hiển thị sau khi user đã click nút ít nhất 1 lần ===
+        if st.session_state.get("tab3_news_loaded", False):
+            news_articles = st.session_state.get("tab3_news_articles", [])
 
             if news_articles:
-                # THÀNH CÔNG: Hiển thị tối đa 12 bài mới nhất (giữ nguyên y nguyên logic hiển thị cũ)
+                # THÀNH CÔNG: Hiển thị tối đa 12 bài mới nhất (giữ nguyên 100% logic hiển thị cũ)
                 st.caption(f"Hiển thị {min(12, len(news_articles))} bài mới nhất • Cập nhật gần đây")
 
                 for article in news_articles[:12]:
@@ -918,7 +939,7 @@ def main():
                 st.divider()
                 st.caption("💡 Tin tức chỉ mang tính tham khảo, không phải lời khuyên đầu tư tài chính.")
             else:
-                # RSS fail tạm thời → friendly message (KHÔNG auto sleep + rerun loop để tránh ảnh hưởng healthz)
+                # RSS fail tạm thời → friendly message
                 st.warning("⚠️ Tạm thời không lấy được tin từ các nguồn RSS.")
                 st.info("Các báo Việt Nam (VNExpress, Tuổi Trẻ, CafeF, VnEconomy) có thể đang bảo trì hoặc Cloud bị chặn tạm thời. Vui lòng nhấn **Làm mới tin tức** sau ít phút để thử lại.")
         else:
