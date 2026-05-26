@@ -12,3 +12,4 @@ feedparser>=6.0.10
 # - Không dùng pandas-ta hoặc ta-lib để giữ code giáo dục (tính chỉ báo thủ công)
 # - Tất cả API calls đều dùng requests thuần (dễ hiểu, không wrapper)
 # - Chạy tốt trên Windows / macOS / Linux với Python 3.10+
+feedparser
