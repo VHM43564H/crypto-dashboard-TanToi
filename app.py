@@ -17,9 +17,17 @@ Chạy: streamlit run app.py
 """
 
 # =============================================================================
-# 1. IMPORTS
+# 1. IMPORTS + CẤU HÌNH TRANG (QUAN TRỌNG: set_page_config PHẢI LÀ LỆNH STREAMLIT ĐẦU TIÊN)
 # =============================================================================
 import streamlit as st
+
+# st.set_page_config PHẢI ở VERY TOP ngay sau import streamlit (trước mọi st.* khác và trước heavy imports nếu có)
+st.set_page_config(
+    page_title="Crypto Dashboard Pro | Phân tích Crypto",
+    page_icon="📊",
+    layout="wide"
+)
+
 import pandas as pd
 import numpy as np
 import requests
@@ -28,16 +36,6 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
 import feedparser
-
-# =============================================================================
-# 2. CẤU HÌNH TRANG + CUSTOM CSS (GIAO DIỆN CHUYÊN NGHIỆP)
-# =============================================================================
-st.set_page_config(
-    page_title="Crypto Dashboard Pro | Phân tích Crypto",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
 
 # CSS tùy chỉnh cho theme crypto hiện đại + đẹp hơn
 st.markdown("""
@@ -431,7 +429,7 @@ def fetch_crypto_news(limit: int = 15) -> list:
 # 4b. HÀM MỚI CHO TAB 3: TIN TỨC KINH TẾ - TÀI CHÍNH VIỆT NAM (RSS)
 # =============================================================================
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_vietnam_econ_news(limit: int = 12) -> list:
     """
     Lấy tin tức Kinh tế - Tài chính Việt Nam mới nhất từ 4 nguồn RSS uy tín.
@@ -439,87 +437,90 @@ def fetch_vietnam_econ_news(limit: int = 12) -> list:
 
     Trả về list dict chuẩn: title, source, published_ts, summary, url
 
-    Xử lý lỗi CỰC MẠNH:
-    - Mỗi feed fail riêng lẻ → bỏ qua, tiếp tục feed khác
-    - Network/timeout/HTTP/Parse lỗi → nuốt exception
-    - Chỉ trả về bài thật từ RSS. Nếu tất cả fail → trả về [] (UI sẽ tự retry)
-    Cache chỉ 3 phút (ttl=180).
+    Xử lý lỗi CỰC MẠNH (bọc ngoài cùng):
+    - Mọi lỗi (network, parse, timeout, feedparser, sort, ...) → nuốt sạch, trả [] 
+    - KHÔNG BAO GIỜ raise exception ra ngoài (tránh crash app + healthz fail trên Streamlit Cloud)
+    Cache 5 phút (ttl=300).
     """
-    feeds = {
-        "VNExpress Kinh doanh": "https://vnexpress.net/rss/kinh-doanh.rss",
-        "Tuổi Trẻ Kinh doanh": "https://tuoitre.vn/rss/kinh-doanh.rss",
-        "CafeF": "https://cafef.vn/rss/kinh-te.rss",
-        "VnEconomy": "https://vneconomy.vn/rss/kinh-te.rss",
-    }
+    try:
+        feeds = {
+            "VNExpress Kinh doanh": "https://vnexpress.net/rss/kinh-doanh.rss",
+            "Tuổi Trẻ Kinh doanh": "https://tuoitre.vn/rss/kinh-doanh.rss",
+            "CafeF": "https://cafef.vn/rss/kinh-te.rss",
+            "VnEconomy": "https://vneconomy.vn/rss/kinh-te.rss",
+        }
 
-    articles = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    }
+        articles = []
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        }
 
-    for source_name, url in feeds.items():
-        try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                continue
-            feed = feedparser.parse(resp.content)
-            entries = getattr(feed, "entries", None) or []
-            for entry in entries[:6]:
-                try:
-                    title = (entry.get("title") or "").strip()
-                    link = (entry.get("link") or "").strip()
-                    if not title or not link:
-                        continue
-
-                    # published time
-                    published_ts = 0
-                    if hasattr(entry, "published_parsed") and entry.published_parsed:
-                        try:
-                            published_ts = int(time.mktime(entry.published_parsed))
-                        except Exception:
-                            published_ts = 0
-                    elif entry.get("published"):
-                        try:
-                            from email.utils import parsedate_to_datetime
-                            dt = parsedate_to_datetime(entry.get("published"))
-                            published_ts = int(dt.timestamp())
-                        except Exception:
-                            published_ts = 0
-
-                    # summary ngắn gọn
-                    summary = entry.get("summary") or entry.get("description") or ""
-                    summary = " ".join(str(summary).split())[:280]
-                    if "<" in summary and ">" in summary:
-                        import re
-                        summary = re.sub(r"<[^>]+>", " ", summary)
-                        summary = " ".join(summary.split())[:280]
-
-                    articles.append({
-                        "title": title,
-                        "source": source_name,
-                        "published_ts": published_ts,
-                        "summary": summary,
-                        "url": link,
-                    })
-                except Exception:
+        for source_name, url in feeds.items():
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+                if resp.status_code != 200:
                     continue
-        except Exception:
-            continue
+                feed = feedparser.parse(resp.content)
+                entries = getattr(feed, "entries", None) or []
+                for entry in entries[:6]:
+                    try:
+                        title = (entry.get("title") or "").strip()
+                        link = (entry.get("link") or "").strip()
+                        if not title or not link:
+                            continue
 
-    # Sắp xếp mới nhất trước
-    articles.sort(key=lambda x: x.get("published_ts", 0), reverse=True)
+                        # published time
+                        published_ts = 0
+                        if hasattr(entry, "published_parsed") and entry.published_parsed:
+                            try:
+                                published_ts = int(time.mktime(entry.published_parsed))
+                            except Exception:
+                                published_ts = 0
+                        elif entry.get("published"):
+                            try:
+                                from email.utils import parsedate_to_datetime
+                                dt = parsedate_to_datetime(entry.get("published"))
+                                published_ts = int(dt.timestamp())
+                            except Exception:
+                                published_ts = 0
 
-    # Loại trùng
-    seen = set()
-    unique_articles = []
-    for a in articles:
-        key = (a.get("url") or "") + (a.get("title") or "")
-        if key not in seen:
-            seen.add(key)
-            unique_articles.append(a)
+                        # summary ngắn gọn
+                        summary = entry.get("summary") or entry.get("description") or ""
+                        summary = " ".join(str(summary).split())[:280]
+                        if "<" in summary and ">" in summary:
+                            import re
+                            summary = re.sub(r"<[^>]+>", " ", summary)
+                            summary = " ".join(summary.split())[:280]
 
-    # CHỈ trả về bài thật. Không bao giờ trả sample cố định.
-    return unique_articles[:limit]
+                        articles.append({
+                            "title": title,
+                            "source": source_name,
+                            "published_ts": published_ts,
+                            "summary": summary,
+                            "url": link,
+                        })
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # Sắp xếp mới nhất trước
+        articles.sort(key=lambda x: x.get("published_ts", 0), reverse=True)
+
+        # Loại trùng
+        seen = set()
+        unique_articles = []
+        for a in articles:
+            key = (a.get("url") or "") + (a.get("title") or "")
+            if key not in seen:
+                seen.add(key)
+                unique_articles.append(a)
+
+        # CHỈ trả về bài thật. Không bao giờ trả sample cố định.
+        return unique_articles[:limit]
+    except Exception:
+        # Bọc ngoài cùng: tuyệt đối an toàn, không crash app dù RSS có vấn đề gì
+        return []
 
 
 # =============================================================================
@@ -881,56 +882,47 @@ def main():
     # ==========================================================================
     with tab3:
         st.header("📰 Tin tức Kinh tế - Tài chính Việt Nam")
-        st.caption("Nguồn: VNExpress • Tuổi Trẻ • CafeF • VnEconomy (RSS) • Luôn lấy tin mới nhất khi nhấn 'Làm mới tin tức'")
+        st.caption("Nguồn: VNExpress • Tuổi Trẻ • CafeF • VnEconomy (RSS) • Cache 5 phút (ttl=300)")
 
-        # Nút Làm mới tin tức (YÊU CẦU) — clear cache để lấy dữ liệu thật sự mới
+        # Nút Làm mới tin tức — CHỈ KHI CLICK NÚT NÀY (sau khi user switch sang Tab 3) MỚI GỌI FETCH RSS
+        # Thiết kế này đảm bảo: lần load đầu app (healthz) KHÔNG BAO GIỜ chạm RSS → không crash, không delay
         if st.button("🔄 Làm mới tin tức", type="primary", key="refresh_vn_news"):
             st.cache_data.clear()
-            st.session_state["tab3_retry"] = 0
+            st.session_state["tab3_news_loaded"] = True
             st.rerun()
 
-        with st.spinner("Đang lấy tin mới nhất từ báo Việt Nam..."):
-            news_articles = fetch_vietnam_econ_news(limit=12)
+        # HOÀN TOÀN LAZY: fetch_vietnam_econ_news() chỉ được gọi sau khi user nhấn nút ở Tab 3
+        if st.session_state.get("tab3_news_loaded", False):
+            with st.spinner("Đang lấy tin mới nhất từ báo Việt Nam..."):
+                news_articles = fetch_vietnam_econ_news(limit=12)
 
-        if news_articles:
-            # THÀNH CÔNG: Hiển thị tối đa 12 bài mới nhất (đã sort trong fetch)
-            st.caption(f"Hiển thị {min(12, len(news_articles))} bài mới nhất • Cập nhật gần đây")
+            if news_articles:
+                # THÀNH CÔNG: Hiển thị tối đa 12 bài mới nhất (giữ nguyên y nguyên logic hiển thị cũ)
+                st.caption(f"Hiển thị {min(12, len(news_articles))} bài mới nhất • Cập nhật gần đây")
 
-            for article in news_articles[:12]:
-                title = article.get("title", "Không có tiêu đề")
-                source = article.get("source", "Nguồn ẩn")
-                published_ts = article.get("published_ts", 0)
-                summary = article.get("summary", "")
-                url = article.get("url", "#")
-                time_str = get_time_ago_vn(published_ts)
+                for article in news_articles[:12]:
+                    title = article.get("title", "Không có tiêu đề")
+                    source = article.get("source", "Nguồn ẩn")
+                    published_ts = article.get("published_ts", 0)
+                    summary = article.get("summary", "")
+                    url = article.get("url", "#")
+                    time_str = get_time_ago_vn(published_ts)
 
-                with st.container(border=True):
-                    st.markdown(f"### [{title}]({url})")
-                    st.caption(f"📰 {source}  •  ⏱️ {time_str}")
-                    if summary:
-                        st.write(summary)
-                    st.markdown(f"[Đọc bài đầy đủ →]({url})", unsafe_allow_html=True)
+                    with st.container(border=True):
+                        st.markdown(f"### [{title}]({url})")
+                        st.caption(f"📰 {source}  •  ⏱️ {time_str}")
+                        if summary:
+                            st.write(summary)
+                        st.markdown(f"[Đọc bài đầy đủ →]({url})", unsafe_allow_html=True)
 
-            st.divider()
-            st.caption("💡 Tin tức chỉ mang tính tham khảo, không phải lời khuyên đầu tư tài chính.")
-        else:
-            # TẤT CẢ RSS LỖI → THÔNG BÁO THÂN THIỆN + TỰ ĐỘNG THỬ LẠI (KHÔNG DÙNG SAMPLE CỐ ĐỊNH)
-            st.warning("Đang lấy tin mới nhất từ báo Việt Nam...")
-
-            # Tự động retry tối đa 2 lần (có backoff nhẹ)
-            retry_count = st.session_state.get("tab3_retry", 0)
-            if retry_count < 2:
-                st.caption("Không kết nối được ngay. Đang thử lại tự động...")
-                st.session_state["tab3_retry"] = retry_count + 1
-                time.sleep(1.2)
-                st.cache_data.clear()
-                st.rerun()
+                st.divider()
+                st.caption("💡 Tin tức chỉ mang tính tham khảo, không phải lời khuyên đầu tư tài chính.")
             else:
-                st.info("Vẫn chưa lấy được tin từ các nguồn RSS. Vui lòng nhấn nút **Làm mới tin tức** bên trên để thử lại thủ công.")
-                if st.button("🔄 Thử lại ngay", key="manual_retry_tab3"):
-                    st.session_state["tab3_retry"] = 0
-                    st.cache_data.clear()
-                    st.rerun()
+                # RSS fail tạm thời → friendly message (KHÔNG auto sleep + rerun loop để tránh ảnh hưởng healthz)
+                st.warning("⚠️ Tạm thời không lấy được tin từ các nguồn RSS.")
+                st.info("Các báo Việt Nam (VNExpress, Tuổi Trẻ, CafeF, VnEconomy) có thể đang bảo trì hoặc Cloud bị chặn tạm thời. Vui lòng nhấn **Làm mới tin tức** sau ít phút để thử lại.")
+        else:
+            st.info("📌 Nhấn nút **Làm mới tin tức** bên trên (sau khi chuyển sang tab này) để tải tin tức kinh tế - tài chính Việt Nam từ RSS. Dữ liệu chỉ fetch khi bạn yêu cầu — giúp app chạy ổn định trên Streamlit Community Cloud.")
 
         show_strong_disclaimer()
 
